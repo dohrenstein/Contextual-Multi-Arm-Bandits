@@ -12,10 +12,12 @@ class GroundTruthRewardFunction:
     """
     Hidden ground truth function that generates student test scores.
 
-    Student context has 3 features:
+    Student context has 5 features:
     - Feature 0: Prior knowledge (0-1)
     - Feature 1: Study hours per week (0-1, normalized)
     - Feature 2: Mathematical aptitude (0-1)
+    - Feature 3: Attention span (0-1)
+    - Feature 4: Creativity (0-1)
 
     Lesson types (arms):
     - 0: Visual lessons (diagrams, videos)
@@ -32,17 +34,17 @@ class GroundTruthRewardFunction:
         """
         # True coefficients for each lesson type (unknown to the bandit)
         # Each row represents how features affect test scores for that lesson type
-        # More exaggerated weights to create clearer differentiation
+        # Features: [prior, study, aptitude, attention, creativity]
         self.true_weights = {
             0: np.array(
-                [0.05, 0.05, 1.0]
-            ),  # Visual: VERY strongly benefits high aptitude students
+                [0.05, 0.05, 0.8, 0.6, 0.1]
+            ),  # Visual: benefits high aptitude + attention span
             1: np.array(
-                [1.0, 0.05, 0.05]
-            ),  # Auditory: VERY strongly benefits those with prior knowledge
+                [0.8, 0.1, 0.05, 0.5, 0.05]
+            ),  # Auditory: benefits prior knowledge + attention
             2: np.array(
-                [0.05, 1.0, 0.05]
-            ),  # Hands-on: VERY strongly benefits those who study more
+                [0.05, 0.7, 0.1, 0.1, 0.8]
+            ),  # Hands-on: benefits study hours + creativity
         }
 
         # Base scores for each lesson type (equal baseline to ensure fairness)
@@ -63,40 +65,43 @@ class GroundTruthRewardFunction:
         is easy to see in the decision boundary plots.
 
         Args:
-            context: numpy array of shape (3,) with student features
+            context: numpy array of shape (5,) with student features
             arm: integer 0, 1, or 2 representing lesson type
 
         Returns:
             expected_score: float representing the true expected score (no noise)
         """
-        prior, study, aptitude = context
+        prior, study, aptitude, attention, creativity = context
 
         # Linear component (kept from the original ground truth)
-        linear_score = np.dot(self.true_weights[arm], context) * 30
+        linear_score = np.dot(self.true_weights[arm], context) * 25
 
         # Strong non-linear component (arm-specific)
         # Using smooth functions (tanh/sin) to create obvious curved boundaries.
         if arm == 0:  # Visual
-            # Visual has a strong "aptitude threshold" effect + interaction wiggles
+            # Visual benefits high aptitude + attention, with interaction effects
             nonlinear = (
-                28.0 * np.tanh(6.0 * (aptitude - 0.55))
-                + 18.0 * np.sin(2.0 * np.pi * study * aptitude)
-                - 14.0 * (aptitude - 0.85) ** 2
+                25.0 * np.tanh(5.0 * (aptitude - 0.55))
+                + 15.0 * np.tanh(4.0 * (attention - 0.5))
+                + 12.0 * np.sin(2.0 * np.pi * aptitude * attention)
+                - 10.0 * (aptitude - 0.85) ** 2
             )
         elif arm == 1:  # Auditory
-            # Auditory has a strong "prior threshold" effect + prior×aptitude interaction
+            # Auditory benefits prior knowledge + attention span
             nonlinear = (
-                28.0 * np.tanh(6.0 * (prior - 0.55))
-                + 16.0 * np.sin(2.0 * np.pi * prior * aptitude)
-                - 14.0 * (prior - 0.80) ** 2
+                25.0 * np.tanh(5.0 * (prior - 0.55))
+                + 15.0 * np.tanh(4.0 * (attention - 0.5))
+                + 10.0 * np.sin(2.0 * np.pi * prior * attention)
+                - 10.0 * (prior - 0.80) ** 2
             )
         else:  # Hands-on (arm == 2)
-            # Hands-on has a strong "study threshold" effect + study×aptitude interaction
+            # Hands-on benefits study hours + creativity
             nonlinear = (
-                30.0 * np.tanh(6.0 * (study - 0.50))
-                + 20.0 * np.sin(2.0 * np.pi * study)
-                + 18.0 * (study * aptitude)
-                - 10.0 * (1.0 - study) ** 2
+                25.0 * np.tanh(5.0 * (study - 0.50))
+                + 20.0 * np.tanh(4.0 * (creativity - 0.5))
+                + 15.0 * (study * creativity)
+                + 10.0 * np.sin(2.0 * np.pi * creativity)
+                - 8.0 * (1.0 - study) ** 2
             )
 
         return self.base_scores[arm] + linear_score + nonlinear
@@ -106,7 +111,7 @@ class GroundTruthRewardFunction:
         Generate a test score for a student given their context and lesson type.
 
         Args:
-            context: numpy array of shape (3,) with student features
+            context: numpy array of shape (5,) with student features
             arm: integer 0, 1, or 2 representing lesson type
 
         Returns:
@@ -125,7 +130,7 @@ class GroundTruthRewardFunction:
         Returns the best lesson type for a given student (oracle knowledge).
 
         Args:
-            context: numpy array of shape (3,) with student features
+            context: numpy array of shape (5,) with student features
 
         Returns:
             optimal_arm: integer representing best lesson type

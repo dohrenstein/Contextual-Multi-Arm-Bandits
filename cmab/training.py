@@ -7,14 +7,14 @@ This module provides functions to train and evaluate CMAB models.
 from typing import Any, Dict, Optional
 
 from .ground_truth import GroundTruthRewardFunction
-from .student_generator import generate_student_class, CLASS_SIZE, TARGET_COUNTS
+from .student_generator import generate_student_class, CLASS_SIZE, TARGET_PROPORTIONS
 
 
 def train_bandit(
     bandit: Any,
     ground_truth: GroundTruthRewardFunction,
     class_size: int = CLASS_SIZE,
-    target_counts: Optional[Dict[int, int]] = None,
+    target_proportions: Optional[Dict[int, float]] = None,
     n_epochs: int = 20,
     verbose: bool = True,
 ) -> Dict:
@@ -28,15 +28,15 @@ def train_bandit(
         bandit: Contextual bandit instance (must have select_arm, update, predict_best_arm methods)
         ground_truth: GroundTruthRewardFunction instance
         class_size: Students per epoch
-        target_counts: Desired optimal-arm distribution in each sampled class
+        target_proportions: Desired optimal-arm distribution in each sampled class
         n_epochs: Number of epochs
         verbose: Whether to print progress
 
     Returns:
         history: Dictionary with training metrics
     """
-    if target_counts is None:
-        target_counts = TARGET_COUNTS.copy()
+    if target_proportions is None:
+        target_proportions = TARGET_PROPORTIONS.copy()
 
     history = {
         "round": [],
@@ -59,7 +59,7 @@ def train_bandit(
         student_class = generate_student_class(
             ground_truth,
             class_size=class_size,
-            target_counts=target_counts,
+            target_proportions=target_proportions,
         )
 
         epoch_correct = 0
@@ -75,6 +75,7 @@ def train_bandit(
             optimal_arm = int(student["optimal_arm"])
             optimal_reward = float(ground_truth.get_reward(context, optimal_arm))
 
+            # Only collect the observation (no training yet)
             bandit.update(context, selected_arm, reward)
 
             if selected_arm == optimal_arm:
@@ -96,6 +97,9 @@ def train_bandit(
             history["epoch_accuracy"].append(None)
 
             round_num += 1
+
+        # Train once per epoch after collecting all observations
+        bandit.train_epoch()
 
         epoch_accuracy = epoch_correct / epoch_total * 100
 

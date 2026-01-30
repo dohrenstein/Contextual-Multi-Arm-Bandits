@@ -16,7 +16,7 @@ class ContextualBanditXGB:
     Uses epsilon-greedy strategy for exploration vs exploitation.
 
     We model reward as a function of:
-      - student context features (prior knowledge, study hours, aptitude)
+      - student context features (prior knowledge, study hours, aptitude, attention, creativity)
       - lesson type / arm (categorical)
 
     Using a single categorical arm feature avoids one-hot expansion and lets
@@ -51,7 +51,7 @@ class ContextualBanditXGB:
         self.epsilon = epsilon
 
         # XGBoost regressor model
-        # Input: [context (3) + arm (1 categorical)] = 4 features
+        # Input: [context (5) + arm (1 categorical)] = 6 features
         self.model = xgb.XGBRegressor(
             n_estimators=n_estimators,
             max_depth=max_depth,
@@ -72,11 +72,13 @@ class ContextualBanditXGB:
 
     def _make_row(self, context: np.ndarray, arm: int) -> dict:
         """Create a single training row as a python dict."""
-        prior, study, aptitude = context
+        prior, study, aptitude, attention, creativity = context
         return {
             "prior_knowledge": float(prior),
             "study_hours": float(study),
             "aptitude": float(aptitude),
+            "attention": float(attention),
+            "creativity": float(creativity),
             "arm": int(arm),
         }
 
@@ -107,14 +109,19 @@ class ContextualBanditXGB:
 
     def update(self, context: np.ndarray, arm: int, reward: float) -> None:
         """
-        Update the XGBoost model with new (context, arm, reward) observation.
+        Record a new (context, arm, reward) observation.
 
-        NOTE: This retrains the model on ALL historical data (batch learning).
+        This only stores the data. Call train_epoch() to actually train the model.
         """
         self.X_train.append(self._make_row(context, arm))
         self.y_train.append(float(reward))
 
-        # Retrain the model if we have enough data
+    def train_epoch(self) -> None:
+        """
+        Train the XGBoost model on all accumulated data.
+
+        This should be called once per epoch after all observations are collected.
+        """
         if len(self.X_train) >= 2:  # Need at least 2 samples
             X = self._make_frame(self.X_train)
             y = np.array(self.y_train)

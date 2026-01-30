@@ -109,8 +109,9 @@ class ContextualBanditNN:
         self.criterion = nn.MSELoss()
 
         # Experience replay buffer (circular buffer)
+        # Store raw (context, arm, reward) tuples - normalize at training time
         self.replay_buffer_size = replay_buffer_size
-        self.replay_buffer: List[Tuple[np.ndarray, float]] = []
+        self.replay_buffer: List[Tuple[np.ndarray, int, float]] = []
         self.buffer_idx = 0
 
         # Running statistics for input normalization
@@ -179,18 +180,15 @@ class ContextualBanditNN:
 
     def update(self, context: np.ndarray, arm: int, reward: float) -> None:
         """
-        Update the neural network with new (context, arm, reward) observation.
+        Record a new (context, arm, reward) observation.
 
-        This is ONLINE LEARNING: we only use the new observation (and possibly
-        a small sample from the replay buffer) to update the model.
+        This only stores the data. Call train_epoch() to actually train the model.
         """
         # Update running statistics
         self._update_running_stats(context)
 
-        # Create input and add to replay buffer
-        x = self._make_input(context, arm)
-
-        experience = (x.copy(), float(reward))
+        # Store raw (context, arm, reward) - normalize at training time for consistency
+        experience = (context.copy(), int(arm), float(reward))
 
         if len(self.replay_buffer) < self.replay_buffer_size:
             self.replay_buffer.append(experience)
@@ -199,37 +197,62 @@ class ContextualBanditNN:
             self.replay_buffer[self.buffer_idx] = experience
             self.buffer_idx = (self.buffer_idx + 1) % self.replay_buffer_size
 
-        # Perform online updates
-        if len(self.replay_buffer) >= 2:
-            self.model.train()
+    def train_epoch(self, n_updates: int = None) -> None:
+        """
+        Train the neural network on accumulated experience.
 
-            for _ in range(self.updates_per_step):
-                # Sample a mini-batch from replay buffer
-                batch_size = min(self.batch_size, len(self.replay_buffer))
-                indices = np.random.choice(
-                    len(self.replay_buffer), batch_size, replace=False
-                )
+        This should be called once per epoch after all observations are collected.
+        Performs multiple gradient updates by sampling from the replay buffer.
 
-                batch_x = np.array([self.replay_buffer[i][0] for i in indices])
-                batch_y = np.array([self.replay_buffer[i][1] for i in indices])
+        Args:
+            n_updates: Number of gradient update steps to perform.
+                       If None, defaults to enough updates to see each sample ~once on average.
+        """
+        if len(self.replay_buffer) < 2:
+            return
 
-                # Convert to tensors
-                x_tensor = self._to_tensor(batch_x)
-                y_tensor = self._to_tensor(batch_y)
+        # Default: enough updates to cover the buffer approximately once
+        if n_updates is None:
+            n_updates = max(10, len(self.replay_buffer) // self.batch_size)
 
-                # Forward pass
-                self.optimizer.zero_grad()
-                predictions = self.model(x_tensor)
-                loss = self.criterion(predictions, y_tensor)
+        self.model.train()
 
-                # Backward pass with gradient clipping
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
-                self.optimizer.step()
+        for _ in range(n_updates):
+            # Sample a mini-batch from replay buffer
+            batch_size = min(self.batch_size, len(self.replay_buffer))
+            indices = np.random.choice(
+                len(self.replay_buffer), batch_size, replace=False
+            )
 
-                self.total_updates += 1
+            # Build batch with current normalization (consistent across all samples)
+            batch_x = []
+            batch_y = []
+            for i in indices:
+                context, arm, reward = self.replay_buffer[i]
+                x = self._make_input(context, arm)
+                batch_x.append(x)
+                batch_y.append(reward)
 
-            self.is_trained = True
+            batch_x = np.array(batch_x)
+            batch_y = np.array(batch_y)
+
+            # Convert to tensors
+            x_tensor = self._to_tensor(batch_x)
+            y_tensor = self._to_tensor(batch_y)
+
+            # Forward pass
+            self.optimizer.zero_grad()
+            predictions = self.model(x_tensor)
+            loss = self.criterion(predictions, y_tensor)
+
+            # Backward pass with gradient clipping
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            self.optimizer.step()
+
+            self.total_updates += 1
+
+        self.is_trained = True
 
     def predict_best_arm(self, context: np.ndarray) -> int:
         """Predict the best arm for a given context (pure exploitation)."""

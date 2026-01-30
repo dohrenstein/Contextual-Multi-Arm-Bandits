@@ -12,37 +12,41 @@ from .ground_truth import GroundTruthRewardFunction
 
 
 # Default class configuration
-CLASS_SIZE = 100
-TARGET_COUNTS = {0: 60, 1: 30, 2: 10}  # Visual / Auditory / Hands-on optimal counts
+CLASS_SIZE = 25  # Students per class
+TARGET_PROPORTIONS = {
+    0: 0.6,
+    1: 0.3,
+    2: 0.1,
+}  # Visual / Auditory / Hands-on optimal proportions
 
 
 def generate_student_class(
     ground_truth: GroundTruthRewardFunction,
     class_size: int = CLASS_SIZE,
-    target_counts: Optional[Dict[int, int]] = None,
+    target_proportions: Optional[Dict[int, float]] = None,
     pool_multiplier: int = 30,
 ) -> List[Dict]:
     """
     Generate a fresh class of students.
 
     By default, contexts are sampled from a smooth base distribution
-    (Uniform[0,1]^3). If `target_counts` is provided, we then stratify by the
+    (Uniform[0,1]^5). If `target_proportions` is provided, we then stratify by the
     *true* optimal arm (oracle) and sample a class with that mix.
 
     Args:
         ground_truth: GroundTruthRewardFunction instance
         class_size: Number of students in the class
-        target_counts: Desired optimal-arm distribution {arm: count}
+        target_proportions: Desired optimal-arm distribution {arm: proportion}
         pool_multiplier: Multiplier for candidate pool size
 
     Returns:
         List of dicts: {id, context, optimal_arm}
     """
-    if target_counts is None:
-        target_counts = TARGET_COUNTS.copy()
+    if target_proportions is None:
+        target_proportions = TARGET_PROPORTIONS.copy()
 
-    if not target_counts:
-        contexts = np.random.random((class_size, 3))
+    if not target_proportions:
+        contexts = np.random.random((class_size, 5))
         student_class = []
         for student_id, context in enumerate(contexts):
             optimal_arm = int(ground_truth.get_optimal_arm(context))
@@ -51,28 +55,23 @@ def generate_student_class(
             )
         return student_class
 
-    # If target_counts doesn't sum to class_size, treat it as proportions.
-    target_sum = sum(int(v) for v in target_counts.values())
-    if target_sum != class_size:
-        # Convert to proportions then to integer counts that sum to class_size
-        weights = {
-            arm: float(v) / float(target_sum) for arm, v in target_counts.items()
-        }
-        counts = {
-            arm: int(round(weights.get(arm, 0.0) * class_size)) for arm in range(3)
-        }
-        # Fix rounding drift
-        drift = class_size - sum(counts.values())
-        if drift != 0:
-            # Add/subtract to the most common arm
-            best_arm = max(counts.items(), key=lambda x: x[1])[0]
-            counts[best_arm] += drift
-        target_counts = counts
+    # Convert proportions to integer counts that sum to class_size
+    prop_sum = sum(float(v) for v in target_proportions.values())
+    weights = {arm: float(v) / prop_sum for arm, v in target_proportions.items()}
+    target_counts = {
+        arm: int(round(weights.get(arm, 0.0) * class_size)) for arm in range(3)
+    }
+    # Fix rounding drift
+    drift = class_size - sum(target_counts.values())
+    if drift != 0:
+        # Add/subtract to the most common arm
+        best_arm = max(target_counts.items(), key=lambda x: x[1])[0]
+        target_counts[best_arm] += drift
 
     pool_size = max(class_size * pool_multiplier, class_size)
 
     # Build a candidate pool from the base distribution
-    contexts = np.random.random((pool_size, 3))
+    contexts = np.random.random((pool_size, 5))
     optimal_arms = np.array(
         [int(ground_truth.get_optimal_arm(c)) for c in contexts], dtype=int
     )
@@ -92,7 +91,7 @@ def generate_student_class(
         if len(idxs) < need:
             # Increase pool and try once more
             extra_pool_size = max((need - len(idxs)) * 50, class_size * 10)
-            extra_contexts = np.random.random((extra_pool_size, 3))
+            extra_contexts = np.random.random((extra_pool_size, 5))
             extra_optimal_arms = np.array(
                 [int(ground_truth.get_optimal_arm(c)) for c in extra_contexts],
                 dtype=int,
