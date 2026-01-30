@@ -4,6 +4,8 @@ Training Functions for Contextual Multi-Arm Bandits.
 This module provides functions to train and evaluate CMAB models.
 """
 
+import time
+import numpy as np
 from typing import Any, Dict, Optional
 
 from .ground_truth import GroundTruthRewardFunction
@@ -21,11 +23,10 @@ def train_bandit(
     """
     Train a contextual bandit over multiple epochs.
 
-    For each epoch, we generate a new class of students and run one interaction
-    with each student (one pass = one epoch).
+    Optimized version using numpy arrays and vectorized operations.
 
     Args:
-        bandit: Contextual bandit instance (must have select_arm, update, predict_best_arm methods)
+        bandit: Contextual bandit instance (must have select_arm, update, train_epoch methods)
         ground_truth: GroundTruthRewardFunction instance
         class_size: Students per epoch
         target_proportions: Desired optimal-arm distribution in each sampled class
@@ -33,49 +34,55 @@ def train_bandit(
         verbose: Whether to print progress
 
     Returns:
-        history: Dictionary with training metrics
+        history: Dictionary with training metrics (numpy arrays)
     """
     if target_proportions is None:
         target_proportions = TARGET_PROPORTIONS.copy()
 
+    total_rounds = n_epochs * class_size
+
+    # Pre-allocate arrays for history
     history = {
-        "round": [],
-        "epoch": [],
-        "student_id": [],
-        "reward": [],
-        "optimal_arm": [],
-        "selected_arm": [],
-        "cumulative_reward": [],
-        "cumulative_optimal_reward": [],
-        "regret": [],
-        "epoch_accuracy": [],
+        "round": np.arange(total_rounds, dtype=np.int32),
+        "epoch": np.zeros(total_rounds, dtype=np.int32),
+        "student_id": np.zeros(total_rounds, dtype=np.int32),
+        "reward": np.zeros(total_rounds, dtype=np.float64),
+        "optimal_arm": np.zeros(total_rounds, dtype=np.int32),
+        "selected_arm": np.zeros(total_rounds, dtype=np.int32),
+        "cumulative_reward": np.zeros(total_rounds, dtype=np.float64),
+        "cumulative_optimal_reward": np.zeros(total_rounds, dtype=np.float64),
+        "regret": np.zeros(total_rounds, dtype=np.float64),
+        "epoch_accuracy": np.zeros(total_rounds, dtype=np.float64),
     }
 
     cumulative_reward = 0.0
     cumulative_optimal_reward = 0.0
     round_num = 0
+    training_start_time = time.time()
 
     for epoch in range(n_epochs):
-        student_class = generate_student_class(
+        epoch_start_time = time.time()
+
+        # Generate student class (returns numpy arrays)
+        contexts, optimal_arms = generate_student_class(
             ground_truth,
             class_size=class_size,
             target_proportions=target_proportions,
         )
 
         epoch_correct = 0
-        epoch_total = len(student_class)
+        epoch_start = round_num
 
-        for student in student_class:
-            context = student["context"]
-            student_id = student["id"]
+        # Process each student
+        for i in range(class_size):
+            context = contexts[i]
+            optimal_arm = optimal_arms[i]
 
             selected_arm = bandit.select_arm(context)
             reward = float(ground_truth.get_reward(context, selected_arm))
-
-            optimal_arm = int(student["optimal_arm"])
             optimal_reward = float(ground_truth.get_reward(context, optimal_arm))
 
-            # Only collect the observation (no training yet)
+            # Record observation for training
             bandit.update(context, selected_arm, reward)
 
             if selected_arm == optimal_arm:
@@ -83,35 +90,36 @@ def train_bandit(
 
             cumulative_reward += reward
             cumulative_optimal_reward += optimal_reward
-            regret = cumulative_optimal_reward - cumulative_reward
 
-            history["round"].append(round_num)
-            history["epoch"].append(epoch)
-            history["student_id"].append(student_id)
-            history["reward"].append(reward)
-            history["optimal_arm"].append(optimal_arm)
-            history["selected_arm"].append(selected_arm)
-            history["cumulative_reward"].append(cumulative_reward)
-            history["cumulative_optimal_reward"].append(cumulative_optimal_reward)
-            history["regret"].append(regret)
-            history["epoch_accuracy"].append(None)
+            # Store in pre-allocated arrays
+            history["epoch"][round_num] = epoch
+            history["student_id"][round_num] = i
+            history["reward"][round_num] = reward
+            history["optimal_arm"][round_num] = optimal_arm
+            history["selected_arm"][round_num] = selected_arm
+            history["cumulative_reward"][round_num] = cumulative_reward
+            history["cumulative_optimal_reward"][round_num] = cumulative_optimal_reward
+            history["regret"][round_num] = cumulative_optimal_reward - cumulative_reward
 
             round_num += 1
 
         # Train once per epoch after collecting all observations
         bandit.train_epoch()
 
-        epoch_accuracy = epoch_correct / epoch_total * 100
+        epoch_accuracy = epoch_correct / class_size * 100
 
-        epoch_start = epoch * epoch_total
-        for i in range(epoch_start, round_num):
-            history["epoch_accuracy"][i] = epoch_accuracy
+        # Fill epoch_accuracy for all rounds in this epoch
+        history["epoch_accuracy"][epoch_start:round_num] = epoch_accuracy
 
         if verbose:
+            epoch_time = time.time() - epoch_start_time
+            cumulative_time = time.time() - training_start_time
             avg_reward = cumulative_reward / round_num
+            regret = history["regret"][round_num - 1]
             print(
                 f"Epoch {epoch+1:2d}/{n_epochs}: Accuracy = {epoch_accuracy:5.1f}%, "
-                f"Avg Reward = {avg_reward:.2f}, Regret = {regret:.2f}"
+                f"Avg Reward = {avg_reward:.2f}, Regret = {regret:.2f}, "
+                f"Time = {epoch_time:.2f}s (Total: {cumulative_time:.1f}s)"
             )
 
     return history

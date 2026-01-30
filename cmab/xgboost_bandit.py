@@ -140,3 +140,26 @@ class ContextualBanditXGB:
             predicted_rewards.append(pred)
 
         return int(np.argmax(predicted_rewards))
+
+    def predict_best_arms_batch(self, contexts: np.ndarray) -> np.ndarray:
+        """Predict the best arm for a batch of contexts (vectorized).
+        
+        Args:
+            contexts: Array of shape (n_samples, n_features)
+            
+        Returns:
+            Array of shape (n_samples,) with best arm indices
+        """
+        if not self.is_trained:
+            return np.zeros(len(contexts), dtype=int)
+        
+        n_samples = len(contexts)
+        all_predictions = np.zeros((n_samples, self.n_arms))
+        
+        for arm in range(self.n_arms):
+            # Create rows for all contexts with this arm
+            rows = [self._make_row(ctx, arm) for ctx in contexts]
+            X = self._make_frame(rows)
+            all_predictions[:, arm] = self.model.predict(X)
+        
+        return np.argmax(all_predictions, axis=1)

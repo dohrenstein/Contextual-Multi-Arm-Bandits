@@ -39,7 +39,7 @@ class RewardNetwork(nn.Module):
         for hidden_size in hidden_sizes:
             layers.append(nn.Linear(prev_size, hidden_size))
             layers.append(nn.ReLU())
-            layers.append(nn.Dropout(0.1))
+            # No dropout - we have limited updates per epoch
             prev_size = hidden_size
 
         layers.append(nn.Linear(prev_size, 1))
@@ -114,32 +114,14 @@ class ContextualBanditNN:
         self.replay_buffer: List[Tuple[np.ndarray, int, float]] = []
         self.buffer_idx = 0
 
-        # Running statistics for input normalization
-        self.n_samples = 0
-        self.running_mean = np.zeros(n_features)
-        self.running_var = np.ones(n_features)
-
         # Track training progress
         self.total_updates = 0
         self.is_trained = False
 
     def _normalize_context(self, context: np.ndarray) -> np.ndarray:
-        """Normalize context using running statistics."""
-        if self.n_samples < 2:
-            return context
-        return (context - self.running_mean) / (np.sqrt(self.running_var) + 1e-8)
-
-    def _update_running_stats(self, context: np.ndarray) -> None:
-        """Update running mean and variance using Welford's algorithm."""
-        self.n_samples += 1
-        if self.n_samples == 1:
-            self.running_mean = context.copy()
-            self.running_var = np.zeros(self.n_features)
-        else:
-            delta = context - self.running_mean
-            self.running_mean += delta / self.n_samples
-            delta2 = context - self.running_mean
-            self.running_var += (delta * delta2 - self.running_var) / self.n_samples
+        """Normalize context - simple centering since features are already in [0,1]."""
+        # Center around 0.5 and scale to roughly [-1, 1] range
+        return (context - 0.5) * 2.0
 
     def _make_input(self, context: np.ndarray, arm: int) -> np.ndarray:
         """Create neural network input from context and arm."""
@@ -184,9 +166,6 @@ class ContextualBanditNN:
 
         This only stores the data. Call train_epoch() to actually train the model.
         """
-        # Update running statistics
-        self._update_running_stats(context)
-
         # Store raw (context, arm, reward) - normalize at training time for consistency
         experience = (context.copy(), int(arm), float(reward))
 
@@ -206,14 +185,15 @@ class ContextualBanditNN:
 
         Args:
             n_updates: Number of gradient update steps to perform.
-                       If None, defaults to enough updates to see each sample ~once on average.
+                       If None, defaults to multiple passes over the data for better learning.
         """
         if len(self.replay_buffer) < 2:
             return
 
-        # Default: enough updates to cover the buffer approximately once
+        # Default: do multiple passes over the data for better learning
+        # With batch_size == buffer_size, do 10 updates to allow gradient descent to converge
         if n_updates is None:
-            n_updates = max(10, len(self.replay_buffer) // self.batch_size)
+            n_updates = max(10, len(self.replay_buffer) // self.batch_size * 10)
 
         self.model.train()
 
@@ -269,3 +249,28 @@ class ContextualBanditNN:
                 predicted_rewards.append(pred)
 
         return int(np.argmax(predicted_rewards))
+
+    def predict_best_arms_batch(self, contexts: np.ndarray) -> np.ndarray:
+        """Predict the best arm for a batch of contexts (vectorized).
+
+        Args:
+            contexts: Array of shape (n_samples, n_features)
+
+        Returns:
+            Array of shape (n_samples,) with best arm indices
+        """
+        if not self.is_trained:
+            return np.zeros(len(contexts), dtype=int)
+
+        self.model.eval()
+        n_samples = len(contexts)
+        all_predictions = np.zeros((n_samples, self.n_arms))
+
+        with torch.no_grad():
+            for arm in range(self.n_arms):
+                # Create inputs for all contexts with this arm
+                inputs = np.array([self._make_input(ctx, arm) for ctx in contexts])
+                x_tensor = self._to_tensor(inputs)
+                all_predictions[:, arm] = self.model(x_tensor).squeeze().cpu().numpy()
+
+        return np.argmax(all_predictions, axis=1)

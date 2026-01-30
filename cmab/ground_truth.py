@@ -137,3 +137,85 @@ class GroundTruthRewardFunction:
         """
         expected_rewards = [self.get_expected_reward(context, arm) for arm in range(3)]
         return int(np.argmax(expected_rewards))
+
+    def get_expected_rewards_batch(self, contexts: np.ndarray) -> np.ndarray:
+        """
+        Vectorized: compute expected rewards for all contexts and all arms.
+
+        Args:
+            contexts: numpy array of shape (n, 5)
+
+        Returns:
+            expected_rewards: numpy array of shape (n, 3)
+        """
+        n = contexts.shape[0]
+        prior = contexts[:, 0]
+        study = contexts[:, 1]
+        aptitude = contexts[:, 2]
+        attention = contexts[:, 3]
+        creativity = contexts[:, 4]
+
+        rewards = np.zeros((n, 3))
+
+        for arm in range(3):
+            # Linear component
+            linear_score = contexts @ self.true_weights[arm] * 25
+
+            # Non-linear component
+            if arm == 0:  # Visual
+                nonlinear = (
+                    25.0 * np.tanh(5.0 * (aptitude - 0.55))
+                    + 15.0 * np.tanh(4.0 * (attention - 0.5))
+                    + 12.0 * np.sin(2.0 * np.pi * aptitude * attention)
+                    - 10.0 * (aptitude - 0.85) ** 2
+                )
+            elif arm == 1:  # Auditory
+                nonlinear = (
+                    25.0 * np.tanh(5.0 * (prior - 0.55))
+                    + 15.0 * np.tanh(4.0 * (attention - 0.5))
+                    + 10.0 * np.sin(2.0 * np.pi * prior * attention)
+                    - 10.0 * (prior - 0.80) ** 2
+                )
+            else:  # Hands-on (arm == 2)
+                nonlinear = (
+                    25.0 * np.tanh(5.0 * (study - 0.50))
+                    + 20.0 * np.tanh(4.0 * (creativity - 0.5))
+                    + 15.0 * (study * creativity)
+                    + 10.0 * np.sin(2.0 * np.pi * creativity)
+                    - 8.0 * (1.0 - study) ** 2
+                )
+
+            rewards[:, arm] = self.base_scores[arm] + linear_score + nonlinear
+
+        return rewards
+
+    def get_optimal_arms_batch(self, contexts: np.ndarray) -> np.ndarray:
+        """
+        Vectorized: compute optimal arm for each context.
+
+        Args:
+            contexts: numpy array of shape (n, 5)
+
+        Returns:
+            optimal_arms: numpy array of shape (n,) with dtype int
+        """
+        rewards = self.get_expected_rewards_batch(contexts)
+        return np.argmax(rewards, axis=1).astype(int)
+
+    def get_rewards_batch(self, contexts: np.ndarray, arms: np.ndarray) -> np.ndarray:
+        """
+        Vectorized: compute noisy rewards for given contexts and selected arms.
+
+        Args:
+            contexts: numpy array of shape (n, 5)
+            arms: numpy array of shape (n,) with arm indices
+
+        Returns:
+            rewards: numpy array of shape (n,)
+        """
+        expected = self.get_expected_rewards_batch(contexts)
+        # Select the reward for each context's chosen arm
+        n = contexts.shape[0]
+        selected_rewards = expected[np.arange(n), arms]
+        noise = np.random.normal(0, self.noise_std, size=n)
+        return selected_rewards + noise
